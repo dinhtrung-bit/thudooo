@@ -1,117 +1,247 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const SYSTEM_PROMPT = `You write prompts for a virtual try-on model. You receive a reference clothing image, and optionally a camera frame showing the person.
+export const runtime = "nodejs";
 
-Follow these steps:
+const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 
-Step 1 - Examine the person's camera frame (if provided):
-Identify what the person is currently wearing on their upper body, lower body, head, etc. Note the specific garment (e.g. "a plain white t-shirt", "dark blue jeans", "a grey hoodie").
+const SUPPORTED_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+];
 
-Step 2 - Examine the reference clothing image:
-Describe it with material, texture, pattern, fit, and colors. Be specific (e.g. "a red plaid flannel shirt with a relaxed fit" not just "a shirt").
-IMPORTANT: Only describe features you can clearly see. Do NOT infer or guess details like zippers, pockets, buttons, closures, or stitching unless they are obviously visible. If you cannot determine the material, use a general term (e.g. "knit", "woven", "fabric") instead of guessing.
+const SYSTEM_PROMPT = `
+Write a concise English prompt for a virtual try-on model.
 
-Step 3 - Choose the action:
-- If the person is ALREADY WEARING something in the same slot as the reference item (e.g. they wear a t-shirt and the reference is a blouse), use SUBSTITUTE:
-  "Substitute the [description of current clothing] with [description of reference clothing]"
-  Example: "Substitute the plain white t-shirt with a red plaid flannel shirt with a relaxed fit and chest pockets"
+You receive:
+1. A reference garment image.
+2. Optionally, a camera frame of the person.
 
-- If the person is NOT wearing anything in that slot (e.g. no hat, no jacket over their shirt), use ADD:
-  "Add [description of reference clothing] to the person's [body part]"
-  Example: "Add a wide-brimmed natural straw hat with a chin strap to the person's head"
+The wardrobe contains tops and jackets.
 
-Fallback: If no person frame is provided or the relevant body part is not visible, use "the current top" for upper-body items or "the current bottoms" for lower-body items.
-Example: "Substitute the current top with a navy cable-knit sweater with a crew neck"
+Instructions:
+- Describe only visible features of the reference garment.
+- Include visible color, pattern, shape and garment type.
+- Do not invent materials, logos, fasteners or hidden details.
+- Use "Substitute the current top with..." for a top.
+- For outerwear, choose a clear substitute or add instruction
+  appropriate to what is visible in the camera frame.
+- If the camera frame is unclear, refer to "the current top".
+- Keep the prompt between 20 and 35 words.
+- Return only the prompt, without markdown or quotation marks.
+`;
 
-Keep the total prompt between 20-30 words. Include colors, textures, and patterns. Return only the final prompt, nothing else.`;
+function validateImage(file: File): string | null {
+  if (!SUPPORTED_TYPES.includes(file.type)) {
+    return "Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP.";
+  }
+
+  if (file.size === 0) {
+    return "Ảnh đang rỗng.";
+  }
+
+  if (file.size > MAX_IMAGE_SIZE) {
+    return "Ảnh vượt quá giới hạn 10 MB.";
+  }
+
+  return null;
+}
+
+async function toDataUrl(file: File) {
+  const buffer = Buffer.from(await file.arrayBuffer());
+
+  return `data:${file.type};base64,${buffer.toString("base64")}`;
+}
+
+type ContentPart =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "image_url";
+      image_url: {
+        url: string;
+        detail: "auto" | "low";
+      };
+    };
 
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENAI_API_KEY;
+
   if (!apiKey) {
     return NextResponse.json(
-      { error: "OPENAI_API_KEY not set" },
-      { status: 500 }
+      {
+        error:
+          "Dịch vụ tạo mô tả chưa được cấu hình.",
+      },
+      { status: 503 }
     );
   }
 
+  const controller = new AbortController();
+  let timedOut = false;
+
+  const handleAbort = () => controller.abort();
+
+  if (req.signal.aborted) {
+    controller.abort();
+  } else {
+    req.signal.addEventListener("abort", handleAbort, {
+      once: true,
+    });
+  }
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 20_000);
+
   try {
     const formData = await req.formData();
-    const file = formData.get("image") as File | null;
-    if (!file) {
+
+    const image = formData.get("image");
+    const personFrame = formData.get("personFrame");
+
+    if (!(image instanceof File)) {
       return NextResponse.json(
-        { error: "No image provided" },
+        { error: "Thiếu ảnh trang phục." },
         { status: 400 }
       );
     }
 
-    const buffer = await file.arrayBuffer();
-    const base64 = Buffer.from(buffer).toString("base64");
-    const mimeType = file.type || "image/png";
-    const clothingDataUri = `data:${mimeType};base64,${base64}`;
+    const imageError = validateImage(image);
 
-    const userContent: Array<{
-      type: string;
-      text?: string;
-      image_url?: { url: string; detail: string };
-    }> = [
+    if (imageError) {
+      return NextResponse.json(
+        { error: imageError },
+        { status: 400 }
+      );
+    }
+
+    if (
+      personFrame !== null &&
+      !(personFrame instanceof File)
+    ) {
+      return NextResponse.json(
+        { error: "Khung hình camera không hợp lệ." },
+        { status: 400 }
+      );
+    }
+
+    if (personFrame instanceof File) {
+      const frameError = validateImage(personFrame);
+
+      if (frameError) {
+        return NextResponse.json(
+          { error: frameError },
+          { status: 400 }
+        );
+      }
+    }
+
+    const content: ContentPart[] = [
       {
         type: "text",
-        text: "Generate a try-on prompt for this clothing item:",
+        text: "Reference garment:",
       },
       {
         type: "image_url",
-        image_url: { url: clothingDataUri, detail: "auto" },
+        image_url: {
+          url: await toDataUrl(image),
+          detail: "auto",
+        },
       },
     ];
 
-    const personFrame = formData.get("personFrame") as File | null;
-    if (personFrame) {
-      const personBuffer = await personFrame.arrayBuffer();
-      const personBase64 = Buffer.from(personBuffer).toString("base64");
-      const personMime = personFrame.type || "image/jpeg";
-      const personDataUri = `data:${personMime};base64,${personBase64}`;
-      userContent.push(
-        { type: "text", text: "Here is the person from the camera:" },
+    if (personFrame instanceof File) {
+      content.push(
+        {
+          type: "text",
+          text: "Person's camera frame:",
+        },
         {
           type: "image_url",
-          image_url: { url: personDataUri, detail: "low" },
+          image_url: {
+            url: await toDataUrl(personFrame),
+            detail: "low",
+          },
         }
       );
     }
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        max_tokens: 200,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
-      }),
-    });
+    const response = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          max_tokens: 200,
+          messages: [
+            {
+              role: "system",
+              content: SYSTEM_PROMPT,
+            },
+            {
+              role: "user",
+              content,
+            },
+          ],
+        }),
+      }
+    );
 
-    if (!res.ok) {
-      const err = await res.text();
-      console.error("OpenAI API error:", err);
+    if (!response.ok) {
+      console.error(
+        "enhance-prompt upstream status:",
+        response.status
+      );
+
       return NextResponse.json(
-        { error: "Failed to generate prompt" },
-        { status: 500 }
+        {
+          error:
+            "Dịch vụ tạo mô tả đang gặp lỗi. Sẽ sử dụng mô tả dự phòng.",
+        },
+        { status: 502 }
       );
     }
 
-    const data = await res.json();
-    const prompt = data.choices[0]?.message?.content?.trim() || "";
-    return NextResponse.json({ prompt });
-  } catch (error) {
-    console.error("Prompt generation failed:", error);
+    const data = await response.json();
+    const rawPrompt = data.choices?.[0]?.message?.content;
+
+    if (
+      typeof rawPrompt !== "string" ||
+      !rawPrompt.trim()
+    ) {
+      return NextResponse.json(
+        { error: "AI chưa trả về mô tả hợp lệ." },
+        { status: 502 }
+      );
+    }
+
+    return NextResponse.json({
+      prompt: rawPrompt.trim(),
+    });
+  } catch {
     return NextResponse.json(
-      { error: "Prompt generation failed" },
-      { status: 500 }
+      {
+        error: timedOut
+          ? "Tạo mô tả quá thời gian chờ."
+          : "Không thể hoàn thành yêu cầu tạo mô tả.",
+      },
+      { status: timedOut ? 504 : 502 }
+    );
+  } finally {
+    clearTimeout(timer);
+
+    req.signal.removeEventListener(
+      "abort",
+      handleAbort
     );
   }
 }

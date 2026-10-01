@@ -1,28 +1,123 @@
-export async function urlToImageBlob(url: string): Promise<Blob> {
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 24_000_000;
+
+const SUPPORTED_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+];
+
+function loadImage(blob: Blob): Promise<HTMLImageElement> {
+  if (blob.size === 0) {
+    return Promise.reject(new Error("Ảnh trang phục đang rỗng."));
+  }
+
+  if (blob.size > MAX_FILE_BYTES) {
+    return Promise.reject(
+      new Error("Ảnh trang phục vượt quá giới hạn 10 MB.")
+    );
+  }
+
+  if (blob.type && !SUPPORTED_TYPES.includes(blob.type)) {
+    return Promise.reject(
+      new Error("Chỉ hỗ trợ ảnh JPG, PNG hoặc WebP.")
+    );
+  }
+
   return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth || 512;
-      canvas.height = img.naturalHeight || 512;
-      const ctx = canvas.getContext("2d")!;
+    const image = new Image();
+    const objectUrl = URL.createObjectURL(blob);
 
-      ctx.fillStyle = "#FFFFFF";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    let settled = false;
 
+    const cleanup = () => {
+      clearTimeout(timer);
+      image.onload = null;
+      image.onerror = null;
+      URL.revokeObjectURL(objectUrl);
+    };
+
+    const fail = (message: string) => {
+      if (settled) return;
+
+      settled = true;
+      cleanup();
+      reject(new Error(message));
+    };
+
+    const timer = setTimeout(() => {
+      fail("Không đọc được ảnh trong thời gian cho phép.");
+    }, 15_000);
+
+    image.onload = () => {
+      if (settled) return;
+
+      const width = image.naturalWidth;
+      const height = image.naturalHeight;
+
+      if (!width || !height) {
+        fail("Ảnh không có kích thước hợp lệ.");
+        return;
+      }
+
+      if (width * height > MAX_IMAGE_PIXELS) {
+        fail("Độ phân giải ảnh quá lớn. Hãy dùng ảnh nhỏ hơn 24 megapixel.");
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      resolve(image);
+    };
+
+    image.onerror = () => {
+      fail("Ảnh trang phục bị lỗi hoặc không thể giải mã.");
+    };
+
+    image.src = objectUrl;
+  });
+}
+
+function canvasToJpeg(
+  canvas: HTMLCanvasElement,
+  quality: number
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+
+      settled = true;
+      reject(new Error("Chuyển đổi ảnh quá thời gian chờ."));
+    }, 10_000);
+
+    try {
       canvas.toBlob(
         (blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error("Failed to convert image"));
+          if (settled) return;
+
+          settled = true;
+          clearTimeout(timer);
+
+          if (!blob) {
+            reject(new Error("Không thể chuyển đổi ảnh."));
+            return;
+          }
+
+          resolve(blob);
         },
         "image/jpeg",
-        0.9
+        quality
       );
-    };
-    img.onerror = () => reject(new Error("Failed to load image"));
-    img.src = url;
+    } catch {
+      if (settled) return;
+
+      settled = true;
+      clearTimeout(timer);
+
+      reject(new Error("Không thể xử lý dữ liệu ảnh."));
+    }
   });
 }
 
@@ -30,97 +125,96 @@ export async function resizeImageBlob(
   blob: Blob,
   maxSize = 1024
 ): Promise<Blob> {
-  const img = await loadImage(blob);
-  const { naturalWidth: w, naturalHeight: h } = img;
-  if (w <= maxSize && h <= maxSize) return blob;
+  if (!Number.isFinite(maxSize) || maxSize <= 0) {
+    throw new Error("Kích thước ảnh đích không hợp lệ.");
+  }
 
-  const scale = maxSize / Math.max(w, h);
+  const image = await loadImage(blob);
+
+  const scale = Math.min(
+    1,
+    maxSize / Math.max(image.naturalWidth, image.naturalHeight)
+  );
+
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w * scale);
-  canvas.height = Math.round(h * scale);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Failed to resize image"))),
-      "image/jpeg",
-      0.8
-    );
-  });
+  canvas.width = Math.max(
+    1,
+    Math.round(image.naturalWidth * scale)
+  );
+
+  canvas.height = Math.max(
+    1,
+    Math.round(image.naturalHeight * scale)
+  );
+
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("Trình duyệt không hỗ trợ xử lý ảnh.");
+  }
+
+  // Nền trắng tránh vùng trong suốt bị chuyển thành màu đen.
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+
+  context.drawImage(
+    image,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  return canvasToJpeg(canvas, 0.88);
 }
 
-export function captureVideoFrame(
+export async function captureVideoFrame(
   video: HTMLVideoElement,
   maxSize = 320
 ): Promise<Blob> {
-  const { videoWidth: w, videoHeight: h } = video;
-  const scale = maxSize / Math.max(w, h);
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w * scale);
-  canvas.height = Math.round(h * scale);
-  const ctx = canvas.getContext("2d")!;
-  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  if (
+    video.readyState < 2 ||
+    video.videoWidth === 0 ||
+    video.videoHeight === 0
+  ) {
+    throw new Error("Camera chưa có khung hình để xử lý.");
+  }
 
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Failed to capture frame"))),
-      "image/jpeg",
-      0.7
-    );
-  });
-}
+  if (!Number.isFinite(maxSize) || maxSize <= 0) {
+    throw new Error("Kích thước khung hình không hợp lệ.");
+  }
 
-/**
- * Combines two garment images (top + bottom) into a single vertically-stacked
- * image on a white background. Both images are scaled to the same width.
- */
-export async function combineClothingImages(
-  topBlob: Blob,
-  bottomBlob: Blob
-): Promise<Blob> {
-  const [topImg, bottomImg] = await Promise.all([
-    loadImage(topBlob),
-    loadImage(bottomBlob),
-  ]);
-
-  const targetWidth = 512;
-  const topScale = targetWidth / topImg.naturalWidth;
-  const bottomScale = targetWidth / bottomImg.naturalWidth;
-  const topHeight = Math.round(topImg.naturalHeight * topScale);
-  const bottomHeight = Math.round(bottomImg.naturalHeight * bottomScale);
+  const scale = Math.min(
+    1,
+    maxSize / Math.max(video.videoWidth, video.videoHeight)
+  );
 
   const canvas = document.createElement("canvas");
-  canvas.width = targetWidth;
-  canvas.height = topHeight + bottomHeight;
-  const ctx = canvas.getContext("2d")!;
 
-  ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(topImg, 0, 0, targetWidth, topHeight);
-  ctx.drawImage(bottomImg, 0, topHeight, targetWidth, bottomHeight);
+  canvas.width = Math.max(
+    1,
+    Math.round(video.videoWidth * scale)
+  );
 
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(
-      (b) =>
-        b ? resolve(b) : reject(new Error("Failed to combine clothing images")),
-      "image/jpeg",
-      0.9
-    );
-  });
-}
+  canvas.height = Math.max(
+    1,
+    Math.round(video.videoHeight * scale)
+  );
 
-export function loadImage(blob: Blob): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(img.src);
-      resolve(img);
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(img.src);
-      reject(new Error("Failed to load image"));
-    };
-    img.src = URL.createObjectURL(blob);
-  });
+  const context = canvas.getContext("2d");
+
+  if (!context) {
+    throw new Error("Không thể chụp khung hình camera.");
+  }
+
+  context.drawImage(
+    video,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  return canvasToJpeg(canvas, 0.8);
 }

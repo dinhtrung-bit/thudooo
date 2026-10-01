@@ -2,19 +2,19 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Virtual Try-On - Outfit Builder",
+  title: "Phòng thử đồ",
   description:
-    "Combine top and bottom garments into full outfits for virtual try-on",
+    "Khám phá trang phục và trải nghiệm phòng thử đồ trực tuyến.",
 };
 
 export default function RootLayout({
   children,
-}: {
+}: Readonly<{
   children: React.ReactNode;
-}) {
+}>) {
   return (
-    <html lang="en">
-      <body className="antialiased bg-gray-950 text-white">{children}</body>
+    <html lang="vi">
+      <body>{children}</body>
     </html>
   );
 }

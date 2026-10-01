@@ -39,7 +39,7 @@ Return ONLY JSON: {"ok": true/false, "supported": true/false} or {"ok": false, "
 export async function POST(req: NextRequest) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, checked: false });
   }
 
   try {
@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     const image = formData.get("image") as File | null;
     const personFrame = formData.get("personFrame") as File | null;
     if (!image || !personFrame) {
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, checked: false });
     }
 
     const imageBuffer = await image.arrayBuffer();
@@ -98,7 +98,7 @@ export async function POST(req: NextRequest) {
     });
 
     if (!res.ok) {
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, checked: false });
     }
 
     const data = await res.json();
@@ -109,6 +109,7 @@ export async function POST(req: NextRequest) {
       if (parsed.supported === false) {
         return NextResponse.json({
           ok: false,
+          checked: true,
           message:
             "This type of item may not work well yet - we're improving support for more items soon.",
         });
@@ -119,12 +120,12 @@ export async function POST(req: NextRequest) {
         (!ok
           ? "This item needs more of your body visible in the camera to work properly."
           : null);
-      return NextResponse.json({ ok, message });
+      return NextResponse.json({ ok, checked: true, message });
     } catch {
-      return NextResponse.json({ ok: true });
+      return NextResponse.json({ ok: true, checked: false });
     }
   } catch (error) {
     console.error("Clothing fit check failed:", error);
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true, checked: false });
   }
 }

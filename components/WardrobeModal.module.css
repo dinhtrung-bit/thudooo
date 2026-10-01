@@ -1,0 +1,31 @@
+﻿.dialog {
+  width: min(760px, calc(100% - 32px));
+  max-height: 85dvh;
+  margin: auto;
+  padding: 24px;
+  overflow-y: auto;
+  border: 1px solid var(--fitting-line);
+  border-radius: 20px;
+  background: var(--fitting-surface);
+  color: var(--fitting-ink);
+}
+
+.dialog::backdrop { background: rgb(0 0 0 / 45%); }
+.header, .footer { display: flex; align-items: center; gap: 16px; }
+.header { justify-content: space-between; margin-bottom: 24px; }
+.header h2 { margin: 0; font-size: 24px; font-weight: 700; }
+.footer { justify-content: flex-end; margin-top: 24px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; }
+.product {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 2px solid var(--fitting-line);
+  border-radius: 12px;
+  background: var(--fitting-bg);
+  color: inherit;
+}
+.product[aria-pressed="true"] { border-color: var(--fitting-green); background: #e9edde; }
+.image { width: 100%; height: 180px; object-fit: contain; }

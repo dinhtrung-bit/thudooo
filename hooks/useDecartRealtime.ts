@@ -27,8 +27,13 @@ export function useDecartRealtime() {
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const clientRef = useRef<RealtimeClient | null>(null);
+  const requestRef = useRef(0);
 
   const connect = useCallback(async (options: ConnectOptions) => {
+    const request = ++requestRef.current;
+    const previousClient = clientRef.current;
+    clientRef.current = null;
+    previousClient?.disconnect();
     const { apiKey, stream, prompt, onRemoteStream } = options;
     setStatus("connecting");
     setError(null);
@@ -39,17 +44,28 @@ export function useDecartRealtime() {
 
       const rtClient = await client.realtime.connect(stream, {
         model,
-        onRemoteStream,
+        onRemoteStream: (remoteStream) => {
+          if (request === requestRef.current) onRemoteStream(remoteStream);
+        },
         ...(prompt && {
           initialState: { prompt: { text: prompt, enhance: false } },
         }),
       });
 
+      if (request !== requestRef.current) {
+        rtClient.disconnect();
+        return null;
+      }
+      clientRef.current = rtClient;
+      setStatus(rtClient.getConnectionState());
       rtClient.on("connectionChange", (state) => {
+        if (request !== requestRef.current) return;
+        setError(null);
         setStatus(state);
       });
 
       rtClient.on("error", (err) => {
+        if (request !== requestRef.current) return;
         setError(err.message);
         setStatus("error");
       });
@@ -57,6 +73,7 @@ export function useDecartRealtime() {
       clientRef.current = rtClient;
       return rtClient;
     } catch (err) {
+      if (request !== requestRef.current) return null;
       const msg = err instanceof Error ? err.message : "Connection failed";
       setError(msg);
       setStatus("error");
@@ -65,6 +82,7 @@ export function useDecartRealtime() {
   }, []);
 
   const disconnect = useCallback(() => {
+    requestRef.current += 1;
     if (clientRef.current) {
       clientRef.current.disconnect();
       clientRef.current = null;

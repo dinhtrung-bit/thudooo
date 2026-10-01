@@ -1,9 +1,18 @@
 "use client";
 
 import { useRef, useEffect } from "react";
+import Image from "next/image";
+import type { Product } from "@/lib/products";
+
+export type ViewMode = "product" | "camera";
 import { ConnectionStatus } from "@/hooks/useDecartRealtime";
 
 interface TryOnViewProps {
+  selectedProduct?: Product | null;
+  viewMode?: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void;
+  hasSubmittedGarment?: boolean;
+  canEditPrompt?: boolean;
   localStream: MediaStream | null;
   status: ConnectionStatus;
   error: string | null;
@@ -16,16 +25,21 @@ interface TryOnViewProps {
 }
 
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
-  idle: "Waiting for camera...",
-  connecting: "Connecting to Decart...",
-  connected: "Connected - build an outfit to try on",
-  generating: "Live",
-  reconnecting: "Reconnecting...",
-  disconnected: "Disconnected",
-  error: "Connection error",
+  idle: "Đang chờ camera...",
+  connecting: "Đang kết nối AI...",
+  connected: "Đã kết nối — chọn trang phục để thử",
+  generating: "Đang truyền hình ảnh",
+  reconnecting: "Đang kết nối lại...",
+  disconnected: "Đã ngắt kết nối",
+  error: "Lỗi kết nối",
 };
 
 export function TryOnView({
+  selectedProduct = null,
+  viewMode = "camera",
+  onViewModeChange,
+  hasSubmittedGarment = true,
+  canEditPrompt,
   localStream,
   status,
   error,
@@ -40,7 +54,7 @@ export function TryOnView({
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
-    if (localVideoRef.current && localStream) {
+    if (localVideoRef.current) {
       localVideoRef.current.srcObject = localStream;
     }
   }, [localStream]);
@@ -53,10 +67,12 @@ export function TryOnView({
     onLocalVideo?.(localVideoRef);
   }, [onLocalVideo]);
 
-  const isGenerating = status === "generating";
+  const isGenerating = status === "generating" && hasSubmittedGarment;
+
+  const canSubmit = !processingStatus && (status === "connected" || status === "generating") && Boolean(prompt.trim());
 
   return (
-    <div className="relative flex-1 bg-black flex flex-col">
+    <div className="relative flex-1 bg-black flex flex-col text-white" style={{ minHeight: "clamp(360px, 54vw, 610px)" }}>
       <div className="relative flex-1">
         {/* Local camera feed */}
         <video
@@ -81,6 +97,28 @@ export function TryOnView({
           }`}
           style={{ transform: "scaleX(-1)" }}
         />
+
+        {viewMode === "product" && (
+          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-stone-100 p-6 text-stone-800">
+            {selectedProduct ? (
+              <Image
+                src={selectedProduct.image}
+                alt={selectedProduct.name}
+                fill
+                sizes="(max-width: 768px) 100vw, 1000px"
+                className="object-contain p-8"
+              />
+            ) : (
+              <p>Chọn trang phục trong tủ đồ để xem trước.</p>
+            )}
+            {onViewModeChange && (
+              <button type="button" className="fitting-button absolute bottom-4 z-10"
+                onClick={() => onViewModeChange("camera")}>
+                Xem camera
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Status indicator */}
         <div className="absolute top-4 left-4 z-20">
@@ -110,29 +148,35 @@ export function TryOnView({
         )}
 
         {error && (
-          <div className="absolute bottom-4 left-4 right-4 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-20">
+          <div role="alert" className="absolute bottom-4 left-4 right-4 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-20">
             {error}
           </div>
         )}
       </div>
 
       {/* Prompt editor */}
-      {prompt && (
+      {(canEditPrompt ?? Boolean(prompt)) && (
         <div className="p-3 bg-gray-900 border-t border-gray-800">
           <div className="flex gap-2">
             <input
               type="text"
               value={prompt}
               onChange={(e) => onPromptChange(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && onPromptSubmit()}
-              className="flex-1 text-sm bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-              placeholder="Edit prompt..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.nativeEvent.isComposing && canSubmit) onPromptSubmit();
+              }}
+              aria-label="Mô tả thử đồ"
+              disabled={Boolean(processingStatus)}
+              className="min-w-0 flex-1 text-sm bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              placeholder="Chỉnh mô tả..."
             />
             <button
+              type="button"
+              disabled={!canSubmit}
               onClick={onPromptSubmit}
               className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors"
             >
-              Apply
+              Áp dụng
             </button>
           </div>
         </div>
