@@ -1,131 +1,190 @@
+// FILE: app/api/validate-fit/route.ts
+
 import { NextRequest, NextResponse } from "next/server";
+import {
+  parseFitDecision,
+  parseGarmentType,
+  VIET_PHUC_GUIDANCE,
+} from "@/lib/garment-guidance";
 
-const SUPPORTED_ITEMS = [
-  "mask", "sunglasses", "jacket", "cap", "gloves", "hat", "shirt", "eyeglasses",
-  "t-shirt", "sweatshirt", "beanie", "glove", "dress", "goggles", "helmet",
-  "sweater", "glasses", "scarf", "shorts", "jersey", "coat", "socks", "top",
-  "tiara", "vest", "mittens", "cardigan", "blouse", "veil", "skirt",
-  "pants", "shoes", "hoodie",
-];
+export const runtime = "nodejs";
 
-const SYSTEM_PROMPT = `You check whether a clothing item can be virtually tried on given a camera frame of a person.
+const SYSTEM_PROMPT = `
+You check whether a reference garment has enough body area visible in a camera
+frame for virtual try-on. This is a framing check, not sizing or a guarantee
+that the video model can reproduce the garment.
+${VIET_PHUC_GUIDANCE}
 
-Step 1 — Check if the item is a supported type.
-SUPPORTED ITEMS (EXHAUSTIVE LIST — nothing else is supported): ${SUPPORTED_ITEMS.join(", ")}.
-A "close variant" counts as supported (e.g. "bomber jacket" → jacket, "aviator sunglasses" → sunglasses, "polo shirt" → shirt).
-Items NOT on this list are UNSUPPORTED. Examples of unsupported items: bag, handbag, tote, purse, belt, watch, jewelry, necklace, bracelet, ring, earrings, jumpsuit.
-Set "supported": true if the item matches a supported type, false otherwise.
+Supported garment families for this application's framing check:
+tops, jackets, coats, dresses, robes including Vietnamese garments,
+pants, skirts, shoes, hats, scarves and glasses.
+A complete clothing outfit also counts.
+Reject non-clothing objects such as furniture, bags, watches and jewelry.
 
-Step 2 — Classify the item for body visibility check:
-- ACCESSORY (hat, cap, scarf, sunglasses, glasses, mask, goggles, helmet, beanie, tiara, veil, gloves, mittens, socks)
-- OUTERWEAR (jacket, coat, vest, cardigan)
-- BOTTOMS (pants, shorts, skirt, shoes)
-- TOPS (shirt, t-shirt, sweater, sweatshirt, hoodie, blouse, jersey, top)
-- FULL-BODY (dress)
+Classify visibility as top, bottom, full-body or accessory.
 
-Step 3 — Look at the camera frame and determine what body parts are visible:
-- Can you see the person's torso/chest area? (even partially)
-- Can you see the person's waist/hip area or below? (even partially)
+Long ao dai, ngu than, ao tac, nhat binh, giao linh, vien linh and long
+dresses/robes need full-body framing:
+shoulders, torso, arms and legs down to feet visible.
 
-Step 4 — Decide "ok":
-- ACCESSORY / OUTERWEAR → {"ok": true} (no body visibility check needed).
-- BOTTOMS: NOT OK only if the person's lower body (waist and below) is entirely out of frame.
-- TOPS / FULL-BODY: NOT OK only if the person's torso is entirely out of frame.
-- No person at all in the camera → NOT OK.
-- When in doubt → {"ok": true}.
+Do not classify a long robe as a short top just because its hem is cropped.
+A full-body catalog hint requires full-body framing, even if the type is uncertain.
 
-Return ONLY JSON: {"ok": true/false, "supported": true/false} or {"ok": false, "supported": true/false, "message": "<reason>"}`;
+Short tops/outerwear need shoulders and torso visible.
+Bottoms need waist and legs.
+Shoes need feet.
+Accessories need their relevant body area visible.
+
+No person means ok=false.
+For a clearly cropped required area return ok=false.
+
+Return ONLY JSON with boolean ok, boolean supported, and visibility.
+Do not return prose or markdown.
+`;
+
+function unchecked(message: string) {
+  return NextResponse.json({
+    ok: true,
+    checked: false,
+    message,
+  });
+}
+
+function isValidImage(
+  value: FormDataEntryValue | null
+): value is File {
+  return (
+    value instanceof File &&
+    value.size > 0 &&
+    value.size <= 10 * 1024 * 1024 &&
+    ["image/jpeg", "image/png", "image/webp"].includes(
+      value.type
+    )
+  );
+}
+
+async function imageUrl(file: File): Promise<string> {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return `data:${file.type};base64,${buffer.toString("base64")}`;
+}
 
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json({ ok: true, checked: false });
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+
+  if (req.signal.aborted) {
+    abort();
+  } else {
+    req.signal.addEventListener("abort", abort, {
+      once: true,
+    });
   }
 
+  const timer = setTimeout(abort, 18_000);
+
   try {
-    const formData = await req.formData();
-    const image = formData.get("image") as File | null;
-    const personFrame = formData.get("personFrame") as File | null;
-    if (!image || !personFrame) {
-      return NextResponse.json({ ok: true, checked: false });
+    const form = await req.formData();
+    const image = form.get("image");
+    const frame = form.get("personFrame");
+
+    if (!isValidImage(image) || !isValidImage(frame)) {
+      return NextResponse.json(
+        {
+          error:
+            "Ảnh trang phục và camera phải là JPG, PNG hoặc WebP, tối đa 10 MB mỗi ảnh.",
+        },
+        { status: 400 }
+      );
     }
 
-    const imageBuffer = await image.arrayBuffer();
-    const imageBase64 = Buffer.from(imageBuffer).toString("base64");
-    const imageMime = image.type || "image/png";
+    const apiKey = process.env.OPENAI_API_KEY;
 
-    const personBuffer = await personFrame.arrayBuffer();
-    const personBase64 = Buffer.from(personBuffer).toString("base64");
-    const personMime = personFrame.type || "image/jpeg";
+    if (!apiKey) {
+      return unchecked(
+        "Chưa cấu hình kiểm tra camera. Hãy làm theo hướng dẫn của trang phục trước khi thử."
+      );
+    }
 
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "gpt-4o",
-        max_tokens: 100,
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: "Check if this clothing fits what's visible:",
-              },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:${imageMime};base64,${imageBase64}`,
-                  detail: "low",
-                },
-              },
-              { type: "text", text: "Person from camera:" },
-              {
-                type: "image_url",
-                image_url: {
-                  url: `data:${personMime};base64,${personBase64}`,
-                  detail: "auto",
-                },
-              },
-            ],
+    const garmentType = parseGarmentType(
+      form.get("garmentType")
+    );
+
+    const fullBody =
+      form.get("category") === "full-body" ||
+      garmentType !== "auto";
+
+    const response = await fetch(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: "gpt-4o",
+          max_tokens: 150,
+          response_format: {
+            type: "json_object",
           },
-        ],
-      }),
-    });
-
-    if (!res.ok) {
-      return NextResponse.json({ ok: true, checked: false });
-    }
-
-    const data = await res.json();
-    const raw = data.choices[0]?.message?.content?.trim() || "";
-
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed.supported === false) {
-        return NextResponse.json({
-          ok: false,
-          checked: true,
-          message:
-            "This type of item may not work well yet - we're improving support for more items soon.",
-        });
+          messages: [
+            {
+              role: "system",
+              content: SYSTEM_PROMPT,
+            },
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: `Reference garment. Catalog type: ${garmentType}. Full-body framing required: ${fullBody}. Verify the garment against this image.`,
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: await imageUrl(image),
+                    detail: "auto",
+                  },
+                },
+                {
+                  type: "text",
+                  text: "Target person's camera frame:",
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: await imageUrl(frame),
+                    detail: "auto",
+                  },
+                },
+              ],
+            },
+          ],
+        }),
       }
-      const ok = parsed.ok !== false;
-      const message =
-        parsed.message ||
-        (!ok
-          ? "This item needs more of your body visible in the camera to work properly."
-          : null);
-      return NextResponse.json({ ok, checked: true, message });
-    } catch {
-      return NextResponse.json({ ok: true, checked: false });
+    );
+
+    if (!response.ok) {
+      return unchecked(
+        "Dịch vụ kiểm tra camera chưa sẵn sàng. Hãy kiểm tra khung hình theo hướng dẫn của trang phục."
+      );
     }
-  } catch (error) {
-    console.error("Clothing fit check failed:", error);
-    return NextResponse.json({ ok: true, checked: false });
+
+    const data = await response.json();
+    const raw = data.choices?.[0]?.message?.content;
+
+    return NextResponse.json(
+      parseFitDecision(
+        typeof raw === "string" ? raw : ""
+      )
+    );
+  } catch {
+    return unchecked(
+      "Chưa kiểm tra được camera. Hãy chỉnh khung hình theo hướng dẫn của trang phục trước khi thử."
+    );
+  } finally {
+    clearTimeout(timer);
+    req.signal.removeEventListener("abort", abort);
   }
 }
