@@ -29,6 +29,7 @@ import {
 
 import { WardrobeModal } from "@/components/WardrobeModal";
 import { SelectedOutfitBar } from "@/components/SelectedOutfitBar";
+import { ImportedLookbook } from "@/components/ImportedLookbook";
 
 const FALLBACK_PROMPT =
   "Try on the garment in the reference image. Preserve its visible color, pattern, shape and details.";
@@ -704,6 +705,8 @@ export default function OutfitBuilderPage() {
             onTryOn={() => void submitGarment(false)}
           />
         </section>
+
+        <ImportedLookbook />
 
         {visibleError && (
           <p className="fitting-alert" role="alert">
