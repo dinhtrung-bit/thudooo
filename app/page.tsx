@@ -8,7 +8,7 @@ import {
   type RefObject,
 } from "react";
 
-import { PRODUCTS, type Product } from "@/lib/products";
+import type { Product } from "@/lib/products";
 import { resizeImageBlob } from "@/lib/image-utils";
 
 import {
@@ -30,36 +30,22 @@ import {
 import { WardrobeModal } from "@/components/WardrobeModal";
 import { SelectedOutfitBar } from "@/components/SelectedOutfitBar";
 import { ImportedLookbook } from "@/components/ImportedLookbook";
+import { DevelopmentNotice } from "@/components/DevelopmentNotice";
+import { UIIcon } from "@/components/UIIcon";
 
 const FALLBACK_PROMPT =
   "Try on the garment in the reference image. Preserve its visible color, pattern, shape and details.";
 
-function ShirtIcon() {
-  return (
-    <svg
-      width="22"
-      height="22"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m8 3-6 4 3 5 3-2v11h8V10l3 2 3-5-6-4c0 4-8 4-8 0Z" />
-    </svg>
-  );
-}
 
 export default function OutfitBuilderPage() {
   const [selectedProduct, setSelectedProduct] =
-    useState<Product | null>(PRODUCTS[0] ?? null);
+    useState<Product | null>(null);
 
   const [viewMode, setViewMode] =
     useState<ViewMode>("product");
 
   const [isWardrobeOpen, setIsWardrobeOpen] = useState(false);
+  const [showDevelopmentNotice, setShowDevelopmentNotice] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
 
   const [prompt, setPrompt] = useState("");
@@ -95,6 +81,8 @@ export default function OutfitBuilderPage() {
   const remoteStreamRef = useRef<MediaStream | null>(null);
   const localVideoRef = useRef<HTMLVideoElement | null>(null);
   const garmentBlobRef = useRef<Blob | null>(null);
+  const uploadedGarmentRef = useRef<File | null>(null);
+  const uploadedObjectUrlRef = useRef<string | null>(null);
 
   const mountedRef = useRef(false);
   const startingRef = useRef(false);
@@ -176,6 +164,15 @@ export default function OutfitBuilderPage() {
       stopSession();
     };
   }, [stopSession]);
+
+  useEffect(
+    () => () => {
+      if (uploadedObjectUrlRef.current) {
+        URL.revokeObjectURL(uploadedObjectUrlRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     if (!stream) return;
@@ -302,6 +299,33 @@ export default function OutfitBuilderPage() {
     status === "connected" || status === "generating";
 
   const visibleError = cameraError || decartError || uiError;
+  const uiErrorText = uiError?.toLocaleLowerCase("vi") ?? "";
+  const errorLocation = cameraError
+    ? "Camera và quyền truy cập thiết bị"
+    : decartError
+      ? "Kết nối dịch vụ AI"
+      : uiErrorText.includes("camera") ||
+          uiErrorText.includes("khung hình")
+        ? "Camera và khung hình"
+        : uiErrorText.includes("ai") ||
+            uiErrorText.includes("kết nối") ||
+            uiErrorText.includes("máy chủ") ||
+            uiErrorText.includes("token") ||
+            uiErrorText.includes("phiên")
+          ? "Kết nối dịch vụ AI"
+          : uiErrorText.includes("ảnh") ||
+              uiErrorText.includes("trang phục")
+            ? "Ảnh trang phục"
+            : "Quy trình thử đồ";
+  const errorAdvice = cameraError
+    ? "Kiểm tra camera có đang được ứng dụng khác sử dụng không, cấp quyền camera cho trình duyệt và dùng trang web qua HTTPS hoặc localhost."
+    : decartError
+      ? "Kiểm tra Internet và cấu hình dịch vụ AI, sau đó bấm “Kết nối lại”. Nếu lỗi tiếp diễn, dịch vụ có thể đang tạm thời không sẵn sàng."
+      : errorLocation === "Ảnh trang phục"
+        ? "Chọn ảnh JPG, PNG hoặc WebP dưới 10 MB, rõ nét và có trang phục trong khung hình; sau đó thử lại."
+        : errorLocation === "Camera và khung hình"
+          ? "Cho phép trình duyệt dùng camera, đợi hình ảnh xuất hiện đầy đủ rồi thử lại."
+          : "Đọc bước đang báo lỗi, kiểm tra camera, ảnh và kết nối AI rồi thử lại.";
 
   const isBusy = isStarting || processingStatus !== null;
 
@@ -314,23 +338,40 @@ export default function OutfitBuilderPage() {
     setIsWardrobeOpen(false);
   }, []);
 
-  const handleConfirmProduct = useCallback(
-    (product: Product) => {
-      if (taskAbortRef.current) return;
+  const handleUploadGarment = useCallback((file: File) => {
+    if (taskAbortRef.current) return;
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setUiError("Ảnh trang phục: chỉ hỗ trợ JPG, PNG hoặc WebP.");
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setUiError("Ảnh trang phục vượt quá 10 MB. Hãy chọn ảnh nhỏ hơn.");
+      return;
+    }
 
-      if (product.id !== selectedProduct?.id) {
-        setSelectedProduct(product);
-        setPrompt("");
-        garmentBlobRef.current = null;
-      }
+    if (uploadedObjectUrlRef.current) {
+      URL.revokeObjectURL(uploadedObjectUrlRef.current);
+    }
+    const imageUrl = URL.createObjectURL(file);
+    uploadedObjectUrlRef.current = imageUrl;
+    uploadedGarmentRef.current = file;
+    garmentBlobRef.current = null;
 
-      setUiError(null);
-      setNotice(null);
-      setViewMode("product");
-      setIsWardrobeOpen(false);
-    },
-    [selectedProduct?.id]
-  );
+    const product: Product = {
+      id: `upload-${Date.now()}`,
+      name: file.name,
+      image: imageUrl,
+      price: 0,
+      category: "top",
+    };
+    setSelectedProduct(product);
+    setPrompt("");
+    setLastSubmittedId(null);
+    setUiError(null);
+    setNotice("Đã chọn ảnh. Ảnh chỉ được gửi đến dịch vụ AI khi bạn bắt đầu thử đồ.");
+    setViewMode("product");
+    setIsWardrobeOpen(false);
+  }, []);
 
   const submitGarment = useCallback(
     async (updatePrompt: boolean) => {
@@ -401,10 +442,9 @@ export default function OutfitBuilderPage() {
         } else {
           setProcessingStatus("Đang chuẩn bị trang phục...");
 
-          const imageBlob = await fetchGarmentImage(
-            product.image,
-            controller.signal
-          );
+          const imageBlob = uploadedGarmentRef.current
+            ? uploadedGarmentRef.current
+            : await fetchGarmentImage(product.image, controller.signal);
 
           checkCurrent();
 
@@ -569,7 +609,7 @@ export default function OutfitBuilderPage() {
         <div className="fitting-header-inner">
           <a href="/" className="fitting-brand">
             <span className="fitting-brand-mark">
-              <ShirtIcon />
+              <UIIcon name="shirt" size={22} />
             </span>
 
             <span>
@@ -590,37 +630,39 @@ export default function OutfitBuilderPage() {
       </header>
 
       <main className="fitting-main">
-        <section
-          className="fitting-intro"
-          aria-labelledby="fitting-title"
-        >
-          <div>
-            <p className="fitting-eyebrow">
-              PHONG CÁCH BẮT ĐẦU TỪ BẠN
-            </p>
-
-            <h1 id="fitting-title" className="fitting-title">
-              Ít lựa chọn hơn.
-              <br />
-              <em>Đúng chất mình hơn.</em>
-            </h1>
-
-            <p className="fitting-description">
-              Những trang phục được chọn sẵn, chờ bạn thử.
-            </p>
+        <section className="fitting-intro" aria-labelledby="fitting-title">
+          <div className="fitting-intro-copy">
+            <p className="fitting-eyebrow"><UIIcon name="sparkles" size={14} />PHONG CÁCH BẮT ĐẦU TỪ BẠN</p>
+            <h1 id="fitting-title" className="fitting-title">Một trang phục.<br /><em>Một phiên bản mới.</em></h1>
+            <p className="fitting-description">Khám phá phong cách của bạn ngay trong phòng thử AI.<br />Tải ảnh trang phục, bật camera và xem điều gì hợp với mình.</p>
+            <div className="fitting-intro-cta">
+              <button type="button" className="fitting-button fitting-button-primary" disabled={isBusy}
+                onClick={openWardrobe} aria-haspopup="dialog" aria-expanded={isWardrobeOpen}>
+                <UIIcon name="upload" size={17} />Tải ảnh trang phục <UIIcon name="arrow" size={17} />
+              </button>
+              <span className="fitting-intro-tip">Ảnh của bạn. Phong cách của bạn.</span>
+            </div>
           </div>
-
-          <button
-            type="button"
-            className="fitting-button fitting-button-primary"
-            disabled={processingStatus !== null}
-            onClick={openWardrobe}
-            aria-haspopup="dialog"
-            aria-expanded={isWardrobeOpen}
-          >
-            Mở tủ đồ
-          </button>
+          <div className="fitting-hero-art" aria-hidden="true">
+            <div className="fitting-hero-halo" />
+            <div className="fitting-hero-card"><UIIcon name="shirt" size={75} /><span>YOUR NEXT LOOK</span></div>
+            <span className="fitting-hero-badge"><UIIcon name="sparkles" size={17} />Một chút cảm hứng mới</span>
+            <span className="fitting-hero-spark"><UIIcon name="sparkles" size={26} /></span>
+          </div>
         </section>
+        <ol className="fitting-steps" aria-label="Các bước thử trang phục">
+          <li className="fitting-step" data-active={!selectedProduct} aria-current={!selectedProduct ? "step" : undefined}>
+            <span className="fitting-step-number">{selectedProduct ? <UIIcon name="check" size={14} /> : "01"}</span>
+            <div><strong>Chọn trang phục</strong><p>Tải lên ảnh bạn muốn thử</p></div>
+          </li>
+          <li className="fitting-step" data-active={Boolean(selectedProduct) && !isConnected} aria-current={selectedProduct && !isConnected ? "step" : undefined}>
+            <span className="fitting-step-number">{isConnected ? <UIIcon name="check" size={14} /> : "02"}</span>
+            <div><strong>Bật camera</strong><p>Bắt đầu phiên thử của bạn</p></div>
+          </li>
+          <li className="fitting-step" data-active={Boolean(selectedProduct) && isConnected} aria-current={selectedProduct && isConnected ? "step" : undefined}>
+            <span className="fitting-step-number">03</span><div><strong>Khám phá diện mạo</strong><p>Thử trang phục với AI</p></div>
+          </li>
+        </ol>
 
         <section
           className="fitting-studio"
@@ -631,11 +673,11 @@ export default function OutfitBuilderPage() {
             style={{ flexWrap: "wrap" }}
           >
             <div>
-              <h2>Phiên thử đồ</h2>
+              <h2><UIIcon name="camera" size={18} />Phòng thử của bạn</h2>
 
               <p
-                className="fitting-note"
-                style={{ margin: "5px 0 0" }}
+                className="fitting-session-status"
+                data-connected={isConnected}
                 role="status"
               >
                 {sessionLabel}
@@ -653,6 +695,7 @@ export default function OutfitBuilderPage() {
                   disabled={processingStatus !== null}
                   onClick={() => void startSession()}
                 >
+                  <UIIcon name={hasSession || visibleError ? "refresh" : "camera"} size={17} />
                   {hasSession || visibleError
                     ? "Kết nối lại"
                     : "Bắt đầu phiên"}
@@ -665,6 +708,7 @@ export default function OutfitBuilderPage() {
                   className="fitting-button"
                   onClick={stopSession}
                 >
+                  <UIIcon name="stop" size={16} />
                   {isStarting ? "Hủy kết nối" : "Dừng phiên"}
                 </button>
               )}
@@ -675,6 +719,7 @@ export default function OutfitBuilderPage() {
             selectedProduct={selectedProduct}
             viewMode={viewMode}
             onViewModeChange={setViewMode}
+            onOpenWardrobe={openWardrobe}
             localStream={stream}
             status={status}
             error={visibleError}
@@ -709,9 +754,11 @@ export default function OutfitBuilderPage() {
         <ImportedLookbook />
 
         {visibleError && (
-          <p className="fitting-alert" role="alert">
-            {visibleError}
-          </p>
+          <section className="fitting-alert fitting-error-card" role="alert" aria-live="assertive">
+            <strong>Đã xảy ra lỗi tại: {errorLocation}</strong>
+            <p>{visibleError}</p>
+            <span>{errorAdvice}</span>
+          </section>
         )}
 
         {notice && (
@@ -739,10 +786,13 @@ export default function OutfitBuilderPage() {
 
       {isWardrobeOpen && (
         <WardrobeModal
-          selectedProductId={selectedProduct?.id ?? null}
-          onConfirm={handleConfirmProduct}
+          onConfirm={handleUploadGarment}
           onClose={closeWardrobe}
         />
+      )}
+
+      {showDevelopmentNotice && (
+        <DevelopmentNotice onContinue={() => setShowDevelopmentNotice(false)} />
       )}
     </div>
   );

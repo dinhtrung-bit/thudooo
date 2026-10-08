@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Phòng thử đồ",
+  title: "Phòng thử đồ AI",
   description:
-    "Khám phá trang phục và trải nghiệm phòng thử đồ trực tuyến.",
+    "Tải ảnh trang phục để thử đồ với phòng thử đồ AI đang trong giai đoạn thử nghiệm.",
 };
 
 export default function RootLayout({

@@ -1,186 +1,92 @@
 "use client";
-
 import { useRef, useEffect } from "react";
 import Image from "next/image";
 import type { Product } from "@/lib/products";
+import type { ConnectionStatus } from "@/hooks/useDecartRealtime";
+import { UIIcon } from "./UIIcon";
 
 export type ViewMode = "product" | "camera";
-import { ConnectionStatus } from "@/hooks/useDecartRealtime";
-
 interface TryOnViewProps {
-  selectedProduct?: Product | null;
-  viewMode?: ViewMode;
-  onViewModeChange?: (mode: ViewMode) => void;
-  hasSubmittedGarment?: boolean;
-  canEditPrompt?: boolean;
-  localStream: MediaStream | null;
-  status: ConnectionStatus;
-  error: string | null;
-  prompt: string;
-  processingStatus?: string | null;
-  onPromptChange: (prompt: string) => void;
-  onPromptSubmit: () => void;
+  selectedProduct?: Product | null; viewMode?: ViewMode;
+  onViewModeChange?: (mode: ViewMode) => void; onOpenWardrobe?: () => void;
+  hasSubmittedGarment?: boolean; canEditPrompt?: boolean;
+  localStream: MediaStream | null; status: ConnectionStatus; error: string | null;
+  prompt: string; processingStatus?: string | null;
+  onPromptChange: (prompt: string) => void; onPromptSubmit: () => void;
   onRemoteStream: (ref: React.RefObject<HTMLVideoElement | null>) => void;
   onLocalVideo?: (ref: React.RefObject<HTMLVideoElement | null>) => void;
 }
-
 const STATUS_LABELS: Record<ConnectionStatus, string> = {
-  idle: "Đang chờ camera...",
-  connecting: "Đang kết nối AI...",
-  connected: "Đã kết nối — chọn trang phục để thử",
-  generating: "Đang truyền hình ảnh",
-  reconnecting: "Đang kết nối lại...",
-  disconnected: "Đã ngắt kết nối",
-  error: "Lỗi kết nối",
+  idle: "Camera đang tắt", connecting: "Đang kết nối AI", connected: "Sẵn sàng thử trang phục",
+  generating: "AI đang mô phỏng", reconnecting: "Đang kết nối lại", disconnected: "Camera đang tắt", error: "Kết nối gặp lỗi",
 };
-
 export function TryOnView({
-  selectedProduct = null,
-  viewMode = "camera",
-  onViewModeChange,
-  hasSubmittedGarment = true,
-  canEditPrompt,
-  localStream,
-  status,
-  error,
-  prompt,
-  processingStatus,
-  onPromptChange,
-  onPromptSubmit,
-  onRemoteStream,
-  onLocalVideo,
+  selectedProduct = null, viewMode = "camera", onViewModeChange, onOpenWardrobe,
+  hasSubmittedGarment = true, canEditPrompt, localStream, status, error,
+  prompt, processingStatus, onPromptChange, onPromptSubmit, onRemoteStream, onLocalVideo,
 }: TryOnViewProps) {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
-
-  useEffect(() => {
-    if (localVideoRef.current) {
-      localVideoRef.current.srcObject = localStream;
-    }
-  }, [localStream]);
-
-  useEffect(() => {
-    onRemoteStream(remoteVideoRef);
-  }, [onRemoteStream]);
-
-  useEffect(() => {
-    onLocalVideo?.(localVideoRef);
-  }, [onLocalVideo]);
-
+  useEffect(() => { if (localVideoRef.current) localVideoRef.current.srcObject = localStream; }, [localStream]);
+  useEffect(() => { onRemoteStream(remoteVideoRef); }, [onRemoteStream]);
+  useEffect(() => { onLocalVideo?.(localVideoRef); }, [onLocalVideo]);
   const isGenerating = status === "generating" && hasSubmittedGarment;
-
-  const canSubmit = !processingStatus && (status === "connected" || status === "generating") && Boolean(prompt.trim());
-
+  const isConnected = status === "connected" || status === "generating";
+  const canSubmit = !processingStatus && isConnected && Boolean(prompt.trim());
+  const isProduct = viewMode === "product";
+  const statusLabel = isProduct ? selectedProduct ? "Xem trước trang phục" : "Chưa chọn trang phục"
+    : status === "generating" && !hasSubmittedGarment ? STATUS_LABELS.connected : STATUS_LABELS[status];
   return (
-    <div className="relative flex-1 bg-black flex flex-col text-white" style={{ minHeight: "clamp(360px, 54vw, 610px)" }}>
-      <div className="relative flex-1">
-        {/* Local camera feed */}
-        <video
-          ref={localVideoRef}
-          autoPlay
-          playsInline
-          muted
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity ${
-            isGenerating ? "opacity-20" : "opacity-100"
-          }`}
-          style={{ transform: "scaleX(-1)" }}
-        />
-
-        {/* Remote AI stream */}
-        <video
-          ref={remoteVideoRef}
-          autoPlay
-          playsInline
-          muted
-          className={`absolute inset-0 w-full h-full object-cover transition-opacity ${
-            isGenerating ? "opacity-100" : "opacity-0"
-          }`}
-          style={{ transform: "scaleX(-1)" }}
-        />
-
-        {viewMode === "product" && (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-stone-100 p-6 text-stone-800">
-            {selectedProduct ? (
-              <Image
-                src={selectedProduct.image}
-                alt={selectedProduct.name}
-                fill
-                sizes="(max-width: 768px) 100vw, 1000px"
-                className="object-contain p-8"
-              />
-            ) : (
-              <p>Chọn trang phục trong tủ đồ để xem trước.</p>
-            )}
-            {onViewModeChange && (
-              <button type="button" className="fitting-button absolute bottom-4 z-10"
-                onClick={() => onViewModeChange("camera")}>
-                Xem camera
-              </button>
-            )}
+    <div className="tryon-view">
+      <div className="tryon-stage" data-mode={viewMode} aria-busy={Boolean(processingStatus)}>
+        <video ref={localVideoRef} autoPlay playsInline muted aria-label="Hình ảnh camera của bạn" aria-hidden={isProduct || isGenerating} className="tryon-video" style={{ opacity: isGenerating ? 0 : 1 }} />
+        <video ref={remoteVideoRef} autoPlay playsInline muted aria-label="Kết quả thử trang phục bằng AI" aria-hidden={isProduct || !isGenerating} className="tryon-video" style={{ opacity: isGenerating ? 1 : 0 }} />
+        {isProduct && <div className="tryon-product-layer">
+          {selectedProduct ? <div key={selectedProduct.id} className="tryon-product-image">
+            <Image src={selectedProduct.image} alt={selectedProduct.name} fill sizes="(max-width: 640px) 90vw, 1100px" className="tryon-garment" unoptimized />
+          </div> : <div className="tryon-empty">
+            <div className="tryon-empty-art" aria-hidden="true">
+              <div className="tryon-orbit" /><div className="tryon-shirt"><UIIcon name="shirt" size={76} /></div>
+              <span className="tryon-floating-spark"><UIIcon name="sparkles" size={22} /></span>
+              <span className="tryon-floating-tag"><UIIcon name="check" size={16} />Phong cách của bạn</span>
+            </div>
+            <h3>Trang phục của bạn, phiên bản mới</h3>
+            <p>Chọn một ảnh trang phục để bắt đầu.<br />AI sẽ giúp bạn hình dung khi mặc lên người.</p>
+            {onOpenWardrobe && <button type="button" className="fitting-button fitting-button-primary" disabled={Boolean(processingStatus)} onClick={onOpenWardrobe}>
+              <UIIcon name="upload" size={17} />Tải ảnh trang phục <UIIcon name="arrow" size={17} />
+            </button>}
+          </div>}
+        </div>}
+        {!isProduct && !localStream && !processingStatus && <div className="tryon-empty tryon-camera-empty">
+          <div className="tryon-camera-icon"><UIIcon name="camera" size={40} /></div>
+          <h3>Camera chưa được bật</h3><p>Bấm “Bắt đầu phiên” ở phía trên.<br />Giữ trang phục và phần thân cần thử trong khung hình.</p>
+        </div>}
+        <div className="tryon-topbar">
+          <div className="tryon-status" data-live={!isProduct && isGenerating} data-error={!isProduct && status === "error"}>
+            <span className="tryon-status-dot" /><span>{statusLabel}</span>
           </div>
-        )}
-
-        {/* Status indicator */}
-        <div className="absolute top-4 left-4 z-20">
-          <div
-            className={`flex items-center gap-2 text-sm font-medium px-3 py-1.5 rounded-full ${
-              isGenerating
-                ? "bg-green-500/90 text-white"
-                : status === "error"
-                  ? "bg-red-500/90 text-white"
-                  : "bg-black/60 text-white"
-            }`}
-          >
-            {isGenerating && (
-              <span className="w-2 h-2 bg-white rounded-full animate-pulse" />
-            )}
-            {STATUS_LABELS[status]}
-          </div>
+          {onViewModeChange && <div className="tryon-tabs" role="group" aria-label="Chế độ xem">
+            <button type="button" aria-pressed={isProduct} aria-label="Xem trang phục" onClick={() => onViewModeChange("product")}><UIIcon name="shirt" size={16} /><span>Trang phục</span></button>
+            <button type="button" aria-pressed={!isProduct} aria-label="Xem camera" onClick={() => onViewModeChange("camera")}><UIIcon name="camera" size={16} /><span>Camera</span></button>
+          </div>}
         </div>
-
-        {processingStatus && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/50 backdrop-blur-sm z-20">
-            <div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-            <p className="text-white/80 text-sm font-medium">
-              {processingStatus}
-            </p>
-          </div>
-        )}
-
-        {error && (
-          <div role="alert" className="absolute bottom-4 left-4 right-4 bg-red-500/90 text-white text-sm px-4 py-2 rounded-lg z-20">
-            {error}
-          </div>
-        )}
+        {isProduct && selectedProduct && <div className="tryon-preview-caption"><UIIcon name="image" size={15} />Ảnh gốc · Kết quả AI hiển thị trong Camera</div>}
+        {processingStatus && <div className="tryon-processing" role="status" aria-live="polite">
+          <div className="tryon-loader"><UIIcon name="sparkles" size={26} /></div>
+          <strong>{processingStatus}</strong><span>Chờ một chút, phong cách mới đang được chuẩn bị.</span>
+          <div className="tryon-loading-dots" aria-hidden="true"><i /><i /><i /></div>
+        </div>}
+        {error && !processingStatus && !isProduct && <div className="tryon-inline-error"><strong>Phiên thử đồ gặp lỗi</strong><span>{error}</span></div>}
       </div>
-
-      {/* Prompt editor */}
-      {(canEditPrompt ?? Boolean(prompt)) && (
-        <div className="p-3 bg-gray-900 border-t border-gray-800">
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={prompt}
-              onChange={(e) => onPromptChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.nativeEvent.isComposing && canSubmit) onPromptSubmit();
-              }}
-              aria-label="Mô tả thử đồ"
-              disabled={Boolean(processingStatus)}
-              className="min-w-0 flex-1 text-sm bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500/50"
-              placeholder="Chỉnh mô tả..."
-            />
-            <button
-              type="button"
-              disabled={!canSubmit}
-              onClick={onPromptSubmit}
-              className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-500 transition-colors"
-            >
-              Áp dụng
-            </button>
-          </div>
+      {(canEditPrompt ?? Boolean(prompt)) && <div className="tryon-prompt">
+        <label htmlFor="tryon-prompt"><UIIcon name="sparkles" size={16} />Tinh chỉnh phong cách</label>
+        <div className="tryon-prompt-controls">
+          <input id="tryon-prompt" type="text" value={prompt} onChange={e => onPromptChange(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent.isComposing && canSubmit) onPromptSubmit(); }}
+            disabled={Boolean(processingStatus)} placeholder="Mô tả trang phục bạn muốn thử..." />
+          <button type="button" className="fitting-button fitting-button-primary" disabled={!canSubmit} onClick={onPromptSubmit}>Áp dụng <UIIcon name="arrow" size={16} /></button>
         </div>
-      )}
+      </div>}
     </div>
   );
 }
